@@ -1,0 +1,6 @@
+{
+  "agentId": "claude-code",
+  "agents": {
+    "my-agent": "http://localhost:41241"
+  }
+}
