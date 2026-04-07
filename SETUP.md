@@ -107,27 +107,32 @@ Once connected, two tools are available in any host:
 
 ## A2A protocol
 
-Outbound requests use a simplified A2A envelope:
+Outbound requests use the A2A JSON-RPC 2.0 binding (`message/stream`):
 
 ```
 POST {agentUrl}
 X-Agent-ID: {your agentId}
 Content-Type: application/json
-Accept: text/event-stream
+Accept: text/event-stream, application/json
 
 {
-  "id": "<uuid>",
-  "sessionId": "<uuid>",
-  "message": {
-    "role": "user",
-    "parts": [{ "type": "text", "text": "..." }]
-  }
+  "jsonrpc": "2.0",
+  "method": "message/stream",
+  "params": {
+    "message": {
+      "role": "user",
+      "messageId": "<uuid>",
+      "contextId": "<session-uuid>",
+      "parts": [{ "text": "..." }]
+    }
+  },
+  "id": "<request-uuid>"
 }
 ```
 
-Response is an SSE stream. The adapter waits for a `status.state === "completed"` event and returns the artifact text to the calling tool.
+Response is an SSE stream of JSON-RPC 2.0 envelopes. The adapter waits for an event with `result.task.status.state === "completed"` and returns `result.task.artifacts[].parts[].text` to the calling tool.
 
-Agents that respond with plain JSON (non-streaming) are also supported as a fallback.
+Agents that respond with a single plain JSON-RPC response (non-streaming) are also supported as a fallback. Errors surface as JSON-RPC `error` objects and are thrown to the caller.
 
 ---
 
