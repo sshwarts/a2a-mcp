@@ -71,10 +71,35 @@ interface AgentResult {
   refs: MemoryRef[];
 }
 
+/**
+ * Parse an agent selector of the form "<name>" or "<name>@<channel>".
+ * The suffix, when present, is a lowercased hint the recipient agent can use
+ * to route the request into a specific channel's active session (e.g.
+ * "perry@slack" → inject into Perry's live Slack session rather than
+ * spawning a fresh isolated context). Case-insensitive on both sides of @.
+ *
+ * Per design thread with CC (2026-04-09): the suffix is carried in A2A
+ * `message.metadata.targetGroup`, which is the protocol's declared
+ * extension point. Unknown to agents that don't care; opt-in for agents
+ * that do. No breaking change.
+ */
+function parseAgentSelector(raw: string): {
+  name: string;
+  targetGroup: string | null;
+} {
+  const at = raw.indexOf('@');
+  if (at < 0) return { name: raw, targetGroup: null };
+  return {
+    name: raw.slice(0, at),
+    targetGroup: raw.slice(at + 1).toLowerCase(),
+  };
+}
+
 function buildRequest(
   message: string,
   contextId: string,
   memoryRefs: MemoryRef[],
+  targetGroup: string | null,
 ): {
   jsonrpc: '2.0';
   method: 'message/stream';
@@ -87,8 +112,11 @@ function buildRequest(
     contextId,
     parts: [{ text: message }],
   };
-  if (memoryRefs.length > 0) {
-    msg.metadata = { memoryRefs };
+  const metadata: Record<string, unknown> = {};
+  if (memoryRefs.length > 0) metadata['memoryRefs'] = memoryRefs;
+  if (targetGroup) metadata['targetGroup'] = targetGroup;
+  if (Object.keys(metadata).length > 0) {
+    msg.metadata = metadata;
   }
   return {
     jsonrpc: '2.0',
@@ -176,8 +204,9 @@ async function callAgent(
   message: string,
   sessionId: string,
   memoryRefs: MemoryRef[],
+  targetGroup: string | null,
 ): Promise<AgentResult> {
-  const request = buildRequest(message, sessionId, memoryRefs);
+  const request = buildRequest(message, sessionId, memoryRefs, targetGroup);
 
   const response = await fetch(agentUrl, {
     method: 'POST',
@@ -236,7 +265,7 @@ server.tool(
 
 server.tool(
   'ask_agent',
-  'Send a message to a named A2A agent and return its response. Optionally attach memory references (AMP memory IDs) that travel with the message so the agent can fetch shared context before answering.',
+  'Send a message to a named A2A agent and return its response. Optionally attach memory references (AMP memory IDs) that travel with the message so the agent can fetch shared context before answering. The agent name supports an optional @<channel> suffix (case-insensitive) — e.g. "perry@slack" — which asks the recipient agent to run the request inside the named channel\'s primary live session rather than spawning a fresh isolated context. The suffix rides along as A2A message.metadata.targetGroup and is ignored by agents that don\'t implement cross-channel routing.',
   {
     agent: z.string().describe('Agent name — use list_agents to see available agents'),
     message: z.string().describe('Message to send to the agent'),
@@ -271,12 +300,16 @@ server.tool(
       ),
   },
   async ({ agent, message, session_id, memory_refs }) => {
-    const url = config.agents[agent];
+    // Split "<name>@<channel>" if present. The bare name drives URL lookup;
+    // the channel suffix (lowercased) rides along as metadata for the
+    // recipient's cross-channel routing logic.
+    const { name: agentName, targetGroup } = parseAgentSelector(agent);
+    const url = config.agents[agentName];
     if (!url) {
       const available = Object.keys(config.agents).join(', ');
       return {
         content: [
-          { type: 'text', text: `Unknown agent "${agent}". Available: ${available}` },
+          { type: 'text', text: `Unknown agent "${agentName}". Available: ${available}` },
         ],
         isError: true,
       };
@@ -314,7 +347,7 @@ server.tool(
     }
 
     try {
-      const result = await callAgent(url, message, sessionId, refs);
+      const result = await callAgent(url, message, sessionId, refs, targetGroup);
       const content: Array<{ type: 'text'; text: string }> = [
         { type: 'text', text: result.text || '(no response)' },
       ];
